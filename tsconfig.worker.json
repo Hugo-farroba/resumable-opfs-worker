@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "target": "esnext",
+    "noEmit": true,
+    "lib": ["esnext", "webworker"],
+    "types": ["@types/content-disposition"]
+  },
+  "include": ["workers/**/*.ts"]
+}

@@ -6,22 +6,38 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "build:workers": "bun build workers/download-worker.ts --target=browser --format=esm --outdir=public/workers && bun build workers/sw.ts --target=browser --format=esm --outdir=public",
+    "watch:workers": "bun build workers/download-worker.ts --target=browser --format=esm --outdir=public/workers --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check"
   },
   "dependencies": {
+    "comlink": "^4.4.2",
+    "content-disposition": "^1.1.0",
+    "content-range": "^2.0.2",
     "next": "16.2.6",
+    "p-retry": "^8.0.0",
+    "pretty-bytes": "^7.1.0",
+    "pretty-ms": "^9.3.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/content-disposition": "^0.5.9",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.2.6",
+    "oxfmt": "^0.48.0",
+    "oxlint": "^1.63.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.5"
   },
   "ignoreScripts": [
     "sharp",
