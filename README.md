@@ -6,6 +6,8 @@ Install a package manager.
 
 Project was initialised with [Bun](https://bun.com/docs/installation)
 
+Install deps using `bun install`
+
 ```bash
 npm run dev
 # or
