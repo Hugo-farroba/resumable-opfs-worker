@@ -182,6 +182,7 @@ export default function DownloadPage() {
   const workerIdRef = useRef<string | null>(null);
   const bcRef = useRef<BroadcastChannel | null>(null);
   const lastDeliveryIdRef = useRef<string | null>(null);
+  const activeDownloadUrlRef = useRef<string | null>(null);
 
   const speedSamplesRef = useRef<{ t: number; bytes: number }[]>([]);
   const [speed, setSpeed] = useState<number | null>(null);
@@ -275,6 +276,7 @@ export default function DownloadPage() {
               warning: clearError ? null : prev.warning,
             };
           });
+          if (isLocal && msg.status === "idle") activeDownloadUrlRef.current = null;
           break;
         case "complete":
           setDl((prev) => {
@@ -290,6 +292,7 @@ export default function DownloadPage() {
             };
           });
           if (isLocal) {
+            activeDownloadUrlRef.current = null;
             resetSpeed();
             void api
               .listPending()
@@ -306,6 +309,7 @@ export default function DownloadPage() {
             return { ...prev, isLocal, status: "error", error: msg.message };
           });
           if (isLocal) resetSpeed();
+          if (isLocal) activeDownloadUrlRef.current = null;
           break;
         case "warning":
           setDl((prev) => {
@@ -392,7 +396,7 @@ export default function DownloadPage() {
     const handler = () => {
       const wid = workerIdRef.current;
       if (!wid) return;
-      bcRef.current?.postMessage({ type: "goodbye", _wid: wid, url: url || dl.fileName });
+      bcRef.current?.postMessage({ type: "goodbye", _wid: wid, url: activeDownloadUrlRef.current });
     };
     window.addEventListener("beforeunload", handler);
     window.addEventListener("pagehide", handler);
@@ -406,6 +410,7 @@ export default function DownloadPage() {
   const busy = dl.status === "paused" && dl.isLocal;
 
   const startDownload = (targetUrl: string) => {
+    activeDownloadUrlRef.current = targetUrl;
     speedSamplesRef.current = [];
     setSpeed(null);
     setDl({ ...INITIAL_STATE, status: "downloading", isLocal: true });
@@ -429,6 +434,7 @@ export default function DownloadPage() {
   };
 
   const handleCancel = () => {
+    activeDownloadUrlRef.current = null;
     void apiRef.current?.cancel();
     speedSamplesRef.current = [];
     setSpeed(null);
@@ -442,13 +448,13 @@ export default function DownloadPage() {
   // Discard deletes the OPFS files and returns the UI to its initial empty state.
   // Order matters: tell the SW to abort any active delivery stream FIRST,
   // so OPFS isn't held by the SW's response when the worker's removeEntry
-  // runs. The worker's cancel is fired in parallel - by the time the SW's
-  // abort round-trip returns, the worker has the OPFS lock free to delete.
-  const handleReset = () => {
+  // runs. Only then ask the worker to cancel and remove its OPFS files.
+  const handleReset = async () => {
     const id = lastDeliveryIdRef.current;
     lastDeliveryIdRef.current = null;
-    if (id) void abortDelivery(id);
-    void apiRef.current?.cancel();
+    activeDownloadUrlRef.current = null;
+    if (id) await abortDelivery(id);
+    await apiRef.current?.cancel();
     speedSamplesRef.current = [];
     setSpeed(null);
     setDl(INITIAL_STATE);
@@ -592,7 +598,7 @@ export default function DownloadPage() {
                 </ActionButton>
               )}
               {dl.isLocal && (dl.status === "complete" || dl.status === "error") && (
-                <ActionButton onClick={handleReset} variant="danger">
+                <ActionButton onClick={() => void handleReset()} variant="danger">
                   Discard
                 </ActionButton>
               )}
