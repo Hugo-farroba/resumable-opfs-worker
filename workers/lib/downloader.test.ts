@@ -350,6 +350,49 @@ describe("pause / resume preserves bytes", () => {
   });
 });
 
+describe("resume range validation", () => {
+  it("fails instead of appending when a 206 response starts at the wrong byte", async () => {
+    const store = new MemoryStore();
+    const total = 256;
+    const id = await sha256Id(URL_A);
+    const handle = await store.openHandle(id);
+    handle.write(chunkBytes(64, 64)[0], { at: 0 });
+    handle.close();
+    await store.writeMeta({
+      id,
+      url: URL_A,
+      fileName: "file.bin",
+      downloadedBytes: 64,
+      totalBytes: total,
+      createdAt: Date.now(),
+    });
+
+    const fetchFn = makeFakeFetch([
+      {
+        rangeStart: 64,
+        response: {
+          status: 206,
+          headers: { "content-range": `bytes 0-${total - 1}/${total}` },
+          chunks: chunkBytes(total, 32),
+        },
+      },
+    ]);
+    const d = new Downloader(store, { fetchFn, tunables: T });
+    const { events } = recordEvents(d);
+
+    await d.start(URL_A);
+    await waitFor(() => events.some((e) => e.type === "error"));
+
+    expect(events.some((e) => e.type === "data")).toBe(false);
+    expect(store.bytesOf(id).byteLength).toBe(64);
+    const err = events.find((e) => e.type === "error");
+    expect(err?.type).toBe("error");
+    if (err?.type === "error") {
+      expect(err.message).toContain("invalid resumed range");
+    }
+  });
+});
+
 describe("elapsed math (bug 1.3)", () => {
   it("produces non-negative elapsed time on a fresh start", async () => {
     const store = new MemoryStore();

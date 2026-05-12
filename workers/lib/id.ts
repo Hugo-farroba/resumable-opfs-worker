@@ -73,6 +73,29 @@ export function parseTotalBytes(response: Response, rangeStart: number): number 
   return null;
 }
 
+export interface ParsedByteRange {
+  start: number;
+  end: number;
+  size: number | null;
+}
+
+export function parseByteRange(response: Response): ParsedByteRange | null {
+  const range = response.headers.get("content-range");
+  if (!range) return null;
+  try {
+    const parsed = parseContentRange(range);
+    if (!parsed || parsed.unit !== "bytes") return null;
+    if (!Number.isFinite(parsed.start) || !Number.isFinite(parsed.end)) return null;
+    return {
+      start: parsed?.start ?? 0,
+      end: parsed?.end ?? 0,
+      size: typeof parsed.size === "number" && Number.isFinite(parsed.size) ? parsed.size : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Returns true when the server's response indicates Range support.
 // Used to decide whether a future resume will work.
 export function serverSupportsRanges(response: Response): boolean {

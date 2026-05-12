@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { sha256Id, deriveFileName, deriveFileNameFromUrl, parseTotalBytes, serverSupportsRanges } from "./id.js";
+import {
+  sha256Id,
+  deriveFileName,
+  deriveFileNameFromUrl,
+  parseByteRange,
+  parseTotalBytes,
+  serverSupportsRanges,
+} from "./id.js";
 
 describe("sha256Id", () => {
   it("produces 16 hex chars", async () => {
@@ -60,6 +67,18 @@ describe("parseTotalBytes", () => {
   });
   it("returns null when neither header is present", () => {
     expect(parseTotalBytes(res({}), 0)).toBeNull();
+  });
+});
+
+describe("parseByteRange", () => {
+  it("parses a valid byte content-range", () => {
+    const response = new Response(null, { headers: { "content-range": "bytes 100-199/500" } });
+    expect(parseByteRange(response)).toEqual({ start: 100, end: 199, size: 500 });
+  });
+
+  it("returns null when the range header is missing or malformed", () => {
+    expect(parseByteRange(new Response(null))).toBeNull();
+    expect(parseByteRange(new Response(null, { headers: { "content-range": "wat" } }))).toBeNull();
   });
 });
 

@@ -2,6 +2,7 @@ import { FLUSH_BYTES, FLUSH_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, PROGRESS_INTERVA
 import {
   deriveFileName,
   deriveFileNameFromUrl,
+  parseByteRange,
   parseTotalBytes,
   pickIfRangeValidator,
   readValidator,
@@ -249,6 +250,17 @@ export class Downloader extends EventTarget {
     if (!response.ok && response.status !== 206) {
       this.failAndReset("http.error", new Error(`HTTP ${response.status}: ${response.statusText}`));
       return;
+    }
+
+    if (rangeStart > 0 && response.status === 206) {
+      const resumedRange = parseByteRange(response);
+      if (!resumedRange || resumedRange.start !== rangeStart) {
+        this.failAndReset(
+          "range.invalid",
+          new Error(`Server returned an invalid resumed range for byte ${rangeStart.toLocaleString()}.`),
+        );
+        return;
+      }
     }
 
     // Range fallback: server returned 200 to a Range request, meaning either
