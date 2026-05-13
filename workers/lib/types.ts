@@ -99,5 +99,4 @@ export interface Store {
   remove(id: string): Promise<void>;
   listAllMetas(): Promise<DownloadMeta[]>;
   openHandle(id: string): Promise<SyncHandle>;
-  getFile(id: string): Promise<File | Blob>;
 }

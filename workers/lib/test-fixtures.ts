@@ -72,14 +72,6 @@ export class MemoryStore implements Store {
     if (!this.parts.has(id)) this.parts.set(id, { bytes: new Uint8Array(0) });
     return new MemoryHandle(this.parts.get(id)!, () => this.locks.delete(id));
   }
-  async getFile(id: string): Promise<Blob> {
-    const part = this.parts.get(id);
-    if (!part) throw new Error("no part");
-    const copy = new ArrayBuffer(part.bytes.byteLength);
-    new Uint8Array(copy).set(part.bytes);
-    return new Blob([copy]);
-  }
-
   // Test helpers
   bytesOf(id: string): Uint8Array {
     return this.parts.get(id)?.bytes ?? new Uint8Array(0);

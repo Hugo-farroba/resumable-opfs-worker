@@ -1,6 +1,5 @@
 import { assign, createActor, createMachine } from "xstate";
 import type {
-  DownloadMeta,
   ProgressPayload,
   StateSnapshot,
   StatusValue,
@@ -219,11 +218,6 @@ export const downloadUiMachine = createMachine({
     },
   },
 });
-
-export interface PendingDownloadsEvent {
-  type: "PENDING_DOWNLOADS";
-  downloads: DownloadMeta[];
-}
 
 export function createDownloadUiActor() {
   return createActor(downloadUiMachine).start();

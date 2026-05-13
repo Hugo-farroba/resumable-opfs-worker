@@ -159,7 +159,6 @@ export default function DownloadPage() {
   const remote = uiSnapshot.context.remote;
   const [workerReady, setWorkerReady] = useState(false);
   const [pending, setPending] = useState<DownloadMeta[]>([]);
-  const workerRef = useRef<Worker | null>(null);
   const apiRef = useRef<Comlink.Remote<WorkerApi> | null>(null);
   const workerIdRef = useRef<string | null>(null);
   const bcRef = useRef<BroadcastChannel | null>(null);
@@ -181,7 +180,6 @@ export default function DownloadPage() {
     void ensureSwController();
 
     const worker = new Worker("/workers/download-worker.js", { type: "module" });
-    workerRef.current = worker;
     const api = Comlink.wrap<WorkerApi>(worker);
     apiRef.current = api;
 

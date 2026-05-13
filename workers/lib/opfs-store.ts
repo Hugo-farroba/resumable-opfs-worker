@@ -108,12 +108,6 @@ export class OpfsStore implements Store {
     const fh = await root.getFileHandle(this.partPath(id), { create: true });
     return await fh.createSyncAccessHandle();
   }
-
-  async getFile(id: string): Promise<File> {
-    const root = await this.getRoot();
-    const fh = await root.getFileHandle(this.partPath(id));
-    return await fh.getFile();
-  }
 }
 
 // Re-export tryOr for callers that hand-roll best-effort blocks alongside an

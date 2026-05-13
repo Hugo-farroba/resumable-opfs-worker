@@ -10,16 +10,15 @@ function serializeError(err) {
       name: err.name,
       message: err.message,
       stack: err.stack,
-      cause: err.cause !== undefined ? serializeError(err.cause) : undefined
+      cause: err.cause !== undefined ? serializeError(err.cause) : undefined,
     };
   }
   return { name: "NonError", message: String(err) };
 }
 var consoleLogger = {
   log(level, event, ctx, err) {
-    const payload = { event, ...ctx ?? {} };
-    if (err !== undefined)
-      payload.error = serializeError(err);
+    const payload = { event, ...(ctx ?? {}) };
+    if (err !== undefined) payload.error = serializeError(err);
     const line = `[downloader] ${event}`;
     switch (level) {
       case "debug":
@@ -33,7 +32,7 @@ var consoleLogger = {
         console.error(line, payload);
         break;
     }
-  }
+  },
 };
 async function tryOrAsync(logger, event, fn, ctx) {
   try {
@@ -46,7 +45,7 @@ async function tryOrAsync(logger, event, fn, ctx) {
 
 // workers/sw.ts
 var logger = consoleLogger;
-var activeReaders = new Map;
+var activeReaders = new Map();
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 self.addEventListener("message", (event) => {
@@ -71,17 +70,16 @@ self.addEventListener("message", (event) => {
 });
 function cancelActiveReader(id, reason) {
   const reader = activeReaders.get(id);
-  if (!reader)
-    return;
-  reader.cancel().catch((err) => logger.log("warn", "sw.reader.cancel.failed", { id, reason }, err));
+  if (!reader) return;
+  reader
+    .cancel()
+    .catch((err) => logger.log("warn", "sw.reader.cancel.failed", { id, reason }, err));
   activeReaders.delete(id);
 }
 self.addEventListener("fetch", (event) => {
-  if (event.request.method !== "GET")
-    return;
+  if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
-  if (!url.pathname.startsWith(SYNTHETIC_DOWNLOAD_PREFIX))
-    return;
+  if (!url.pathname.startsWith(SYNTHETIC_DOWNLOAD_PREFIX)) return;
   const tail = url.pathname.slice(SYNTHETIC_DOWNLOAD_PREFIX.length);
   const slash = tail.indexOf("/");
   if (slash < 0) {
@@ -93,13 +91,17 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(serveDownload(id, fileName));
 });
 async function serveDownload(id, fileName) {
-  const file = await tryOrAsync(logger, "sw.opfs.openPart.failed", async () => {
-    const root = await navigator.storage.getDirectory();
-    const fh = await root.getFileHandle(id + PART_EXT);
-    return fh.getFile();
-  }, { id });
-  if (!file)
-    return new Response("not found", { status: 404 });
+  const file = await tryOrAsync(
+    logger,
+    "sw.opfs.openPart.failed",
+    async () => {
+      const root = await navigator.storage.getDirectory();
+      const fh = await root.getFileHandle(id + PART_EXT);
+      return fh.getFile();
+    },
+    { id },
+  );
+  if (!file) return new Response("not found", { status: 404 });
   const sourceReader = file.stream().getReader();
   activeReaders.set(id, sourceReader);
   const respStream = new ReadableStream({
@@ -120,13 +122,13 @@ async function serveDownload(id, fileName) {
     },
     cancel() {
       cancelActiveReader(id, "stream-cancel");
-    }
+    },
   });
   const headers = new Headers({
     "Content-Type": "application/octet-stream",
     "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
     "Content-Length": String(file.size),
-    "Cache-Control": "no-store"
+    "Cache-Control": "no-store",
   });
   return new Response(respStream, { status: 200, headers });
 }

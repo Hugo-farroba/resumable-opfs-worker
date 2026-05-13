@@ -19,7 +19,6 @@ export const STALE_AFTER_MS = 12_000;
 export const SPEED_WINDOW_MS = 1_000;
 
 // Service Worker request timeouts.
-export const SW_REQUEST_TIMEOUT_MS = 5_000;
 export const ABORT_DELIVERY_TIMEOUT_MS = 2_000;
 // Wait for an active SW controller after registration before falling back to
 // the registration's `active` worker.
