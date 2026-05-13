@@ -17,35 +17,11 @@ import { parseBroadcastEnvelope } from "../workers/lib/wire";
 import type { WorkerApi } from "../workers/download-worker";
 import type { SwReply, SwRequest } from "../workers/sw";
 import type { DownloadMeta } from "../workers/lib/types";
-
-type DownloadStatus = "idle" | "downloading" | "paused" | "complete" | "error";
-
-interface DownloadState {
-  status: DownloadStatus;
-  downloaded: number;
-  total: number | null;
-  percentage: number | null;
-  error: string | null;
-  warning: string | null;
-  fileName: string | null;
-  chunks: number;
-  elapsedMs: number;
-  // false when this tab is observing another tab's active download
-  isLocal: boolean;
-}
-
-const INITIAL_STATE: DownloadState = {
-  status: "idle",
-  downloaded: 0,
-  total: null,
-  percentage: null,
-  error: null,
-  warning: null,
-  fileName: null,
-  chunks: 0,
-  elapsedMs: 0,
-  isLocal: false,
-};
+import {
+  createDownloadUiActor,
+  type DownloadStatus,
+  type DownloadViewState,
+} from "../lib/download-ui-machine";
 
 const log = consoleLogger;
 
@@ -77,7 +53,8 @@ function ensureSwController(): Promise<ServiceWorker | null> {
 }
 
 function waitForController(reg: ServiceWorkerRegistration): Promise<ServiceWorker | null> {
-  if (navigator.serviceWorker.controller) return Promise.resolve(navigator.serviceWorker.controller);
+  if (navigator.serviceWorker.controller)
+    return Promise.resolve(navigator.serviceWorker.controller);
   return new Promise((resolve) => {
     const onChange = () => {
       if (navigator.serviceWorker.controller) {
@@ -154,7 +131,7 @@ async function abortDelivery(id: string): Promise<void> {
   }
 }
 
-function barWidth(dl: DownloadState): number {
+function barWidth(dl: DownloadViewState): number {
   if (dl.status === "complete") return 100;
   if (dl.total && dl.total > 0) return Math.min(100, Math.round((dl.downloaded / dl.total) * 100));
   return dl.status === "downloading" ? 5 : 0;
@@ -174,7 +151,12 @@ function formatSpeed(bps: number): string {
 
 export default function DownloadPage() {
   const [url, setUrl] = useState("");
-  const [dl, setDl] = useState<DownloadState>(INITIAL_STATE);
+  const uiActorRef = useRef<ReturnType<typeof createDownloadUiActor> | null>(null);
+  if (!uiActorRef.current) uiActorRef.current = createDownloadUiActor();
+  const uiActor = uiActorRef.current;
+  const [uiSnapshot, setUiSnapshot] = useState(() => uiActor.getSnapshot());
+  const dl = uiSnapshot.context.download;
+  const remote = uiSnapshot.context.remote;
   const [workerReady, setWorkerReady] = useState(false);
   const [pending, setPending] = useState<DownloadMeta[]>([]);
   const workerRef = useRef<Worker | null>(null);
@@ -192,10 +174,10 @@ export default function DownloadPage() {
   // them for STALE_AFTER_MS, the master is presumed dead and we surface a
   // Take over button. Click > we send `start` to our own worker, which acquires
   // the OPFS lock (released by the dead tab) and resumes the download.
-  const [remote, setRemote] = useState<{ url: string | null; lastBeatAt: number }>({ url: null, lastBeatAt: 0 });
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
+    const subscription = uiActor.subscribe(setUiSnapshot);
     void ensureSwController();
 
     const worker = new Worker("/workers/download-worker.js", { type: "module" });
@@ -207,7 +189,7 @@ export default function DownloadPage() {
     bcRef.current = bc;
 
     worker.onerror = (e: ErrorEvent) => {
-      setDl((prev) => ({ ...prev, status: "error", error: `Worker error: ${e.message}` }));
+      uiActor.send({ type: "ERROR", message: `Worker error: ${e.message}`, isLocal: true });
     };
 
     // Direct postMessages from the worker: `ping` (workerId handshake) and
@@ -225,7 +207,11 @@ export default function DownloadPage() {
       } else if (msg?.type === "data" && typeof msg.id === "string") {
         const { id, fileName } = msg as { id: string; fileName: string };
         deliverViaServiceWorker(id, fileName).catch((err) => {
-          setDl((prev) => ({ ...prev, status: "error", error: `Delivery failed: ${err?.message ?? String(err)}` }));
+          uiActor.send({
+            type: "ERROR",
+            message: `Delivery failed: ${err?.message ?? String(err)}`,
+            isLocal: true,
+          });
         });
         lastDeliveryIdRef.current = id;
       }
@@ -238,59 +224,34 @@ export default function DownloadPage() {
       handleBroadcast(env, isLocal);
     };
 
-    function handleBroadcast(msg: ReturnType<typeof parseBroadcastEnvelope> & object, isLocal: boolean) {
+    function handleBroadcast(
+      msg: ReturnType<typeof parseBroadcastEnvelope> & object,
+      isLocal: boolean,
+    ) {
       if (!msg) return;
       switch (msg.type) {
         case "progress": {
-          if (!isLocal) setRemote((prev) => ({ ...prev, lastBeatAt: Date.now() }));
           if (isLocal) updateSpeed(msg.downloaded);
-          setDl((prev) => {
-            if (!isLocal && prev.isLocal) return prev;
-            // Forward progress means the previous error/warning is stale.
-            return {
-              ...prev,
-              isLocal,
-              status: "downloading",
-              error: null,
-              warning: null,
+          uiActor.send({
+            type: "PROGRESS",
+            payload: {
               downloaded: msg.downloaded,
               total: msg.total,
               percentage: msg.percentage,
               chunks: msg.chunks,
-              elapsedMs: msg.elapsed,
-            };
+              elapsed: msg.elapsed,
+            },
+            isLocal,
+            at: Date.now(),
           });
           break;
         }
         case "status":
-          setDl((prev) => {
-            if (!isLocal && prev.isLocal) return prev;
-            if (msg.status === "idle" && !isLocal) return INITIAL_STATE;
-            // downloading / paused are forward-progress states - drop stale error.
-            const clearError = msg.status === "downloading" || msg.status === "paused";
-            return {
-              ...prev,
-              isLocal,
-              status: msg.status,
-              error: clearError ? null : prev.error,
-              warning: clearError ? null : prev.warning,
-            };
-          });
+          uiActor.send({ type: "STATUS", status: msg.status, isLocal });
           if (isLocal && msg.status === "idle") activeDownloadUrlRef.current = null;
           break;
         case "complete":
-          setDl((prev) => {
-            if (!isLocal && prev.isLocal) return prev;
-            return {
-              ...prev,
-              isLocal,
-              status: "complete",
-              error: null,
-              warning: null,
-              fileName: msg.fileName,
-              elapsedMs: msg.elapsed,
-            };
-          });
+          uiActor.send({ type: "COMPLETE", fileName: msg.fileName, elapsed: msg.elapsed, isLocal });
           if (isLocal) {
             activeDownloadUrlRef.current = null;
             resetSpeed();
@@ -304,53 +265,21 @@ export default function DownloadPage() {
           setPending(msg.downloads);
           break;
         case "error":
-          setDl((prev) => {
-            if (!isLocal && prev.isLocal) return prev;
-            return { ...prev, isLocal, status: "error", error: msg.message };
-          });
+          uiActor.send({ type: "ERROR", message: msg.message, isLocal });
           if (isLocal) resetSpeed();
           if (isLocal) activeDownloadUrlRef.current = null;
           break;
         case "warning":
-          setDl((prev) => {
-            if (!isLocal && prev.isLocal) return prev;
-            return { ...prev, isLocal, warning: msg.message };
-          });
+          uiActor.send({ type: "WARNING", code: msg.code, message: msg.message, isLocal });
           break;
         case "heartbeat":
-          if (!isLocal) setRemote({ url: msg.url, lastBeatAt: Date.now() });
+          uiActor.send({ type: "HEARTBEAT", url: msg.url, isLocal, at: Date.now() });
           break;
         case "goodbye":
-          // Master tab closing gracefully; observers go stale on next render.
-          if (!isLocal) {
-            setRemote((prev) => ({
-              url: msg.url ?? prev.url,
-              lastBeatAt: 1, // any value > 0 but old enough to be stale next render
-            }));
-          }
+          uiActor.send({ type: "GOODBYE", url: msg.url, isLocal });
           break;
         case "state-snapshot": {
-          const s = msg.state;
-          if (!isLocal) setRemote({ url: s.url, lastBeatAt: Date.now() });
-          setDl((prev) =>
-            prev.isLocal
-              ? prev
-              : {
-                  ...prev,
-                  isLocal: false,
-                  status: s.status,
-                  // A live snapshot from the master means any error we
-                  // previously latched from a transient broadcast is stale.
-                  error: null,
-                  warning: null,
-                  downloaded: s.downloaded,
-                  total: s.total,
-                  percentage: s.percentage,
-                  fileName: s.fileName,
-                  chunks: s.chunks,
-                  elapsedMs: s.elapsed,
-                },
-          );
+          uiActor.send({ type: "STATE_SNAPSHOT", state: msg.state, isLocal, at: Date.now() });
           break;
         }
         case "request-state":
@@ -378,6 +307,7 @@ export default function DownloadPage() {
     }
 
     return () => {
+      subscription.unsubscribe();
       worker.terminate();
       bc.close();
     };
@@ -406,15 +336,18 @@ export default function DownloadPage() {
     };
   }, [isMaster, url, dl.fileName]);
 
-  const remoteStale = observing && remote.lastBeatAt > 0 && now - remote.lastBeatAt > STALE_AFTER_MS;
+  const remoteStale =
+    observing && remote.lastBeatAt > 0 && now - remote.lastBeatAt > STALE_AFTER_MS;
   const busy = dl.status === "paused" && dl.isLocal;
 
   const startDownload = (targetUrl: string) => {
     activeDownloadUrlRef.current = targetUrl;
     speedSamplesRef.current = [];
     setSpeed(null);
-    setDl({ ...INITIAL_STATE, status: "downloading", isLocal: true });
-    void apiRef.current?.start(targetUrl).catch((err) => log.log("error", "ui.start.failed", { targetUrl }, err));
+    uiActor.send({ type: "LOCAL_START" });
+    void apiRef.current
+      ?.start(targetUrl)
+      .catch((err) => log.log("error", "ui.start.failed", { targetUrl }, err));
   };
 
   const handleStart = () => {
@@ -424,12 +357,12 @@ export default function DownloadPage() {
   };
 
   const handlePause = () => {
-    setDl((prev) => ({ ...prev, status: "paused" }));
+    uiActor.send({ type: "LOCAL_PAUSE" });
     void apiRef.current?.pause();
   };
 
   const handleResume = () => {
-    setDl((prev) => ({ ...prev, status: "downloading" }));
+    uiActor.send({ type: "LOCAL_RESUME" });
     void apiRef.current?.resume();
   };
 
@@ -438,7 +371,7 @@ export default function DownloadPage() {
     void apiRef.current?.cancel();
     speedSamplesRef.current = [];
     setSpeed(null);
-    setDl(INITIAL_STATE);
+    uiActor.send({ type: "LOCAL_RESET" });
     void apiRef.current
       ?.listPending()
       .then(setPending)
@@ -457,7 +390,7 @@ export default function DownloadPage() {
     await apiRef.current?.cancel();
     speedSamplesRef.current = [];
     setSpeed(null);
-    setDl(INITIAL_STATE);
+    uiActor.send({ type: "LOCAL_RESET" });
     void apiRef.current
       ?.listPending()
       .then(setPending)
@@ -467,7 +400,7 @@ export default function DownloadPage() {
   const handleTakeover = () => {
     const targetUrl = remote.url;
     if (!targetUrl) return;
-    setRemote({ url: null, lastBeatAt: 0 });
+    uiActor.send({ type: "TAKEOVER_RESET" });
     startDownload(targetUrl);
   };
 
@@ -541,7 +474,9 @@ export default function DownloadPage() {
               <StatusBadge status={dl.status} stalled={!dl.isLocal && remoteStale} />
               <WorkerBadge ready={workerReady} />
               {dl.fileName && (
-                <span className="text-xs text-zinc-500 truncate max-w-[55%]">{safeDecode(dl.fileName)}</span>
+                <span className="text-xs text-zinc-500 truncate max-w-[55%]">
+                  {safeDecode(dl.fileName)}
+                </span>
               )}
             </div>
 
@@ -562,7 +497,9 @@ export default function DownloadPage() {
               </Metric>
               <Metric label="Speed">{speed != null ? formatSpeed(speed) : "-"}</Metric>
               <Metric label="Chunks">{dl.chunks > 0 ? dl.chunks : "-"}</Metric>
-              <Metric label="Elapsed">{dl.elapsedMs > 0 ? formatElapsed(dl.elapsedMs) : "-"}</Metric>
+              <Metric label="Elapsed">
+                {dl.elapsedMs > 0 ? formatElapsed(dl.elapsedMs) : "-"}
+              </Metric>
             </div>
 
             {dl.warning && (
@@ -571,17 +508,25 @@ export default function DownloadPage() {
               </p>
             )}
 
-            {dl.error && <p className="text-xs text-red-500 bg-red-50 dark:bg-red-950/30 rounded p-2">{dl.error}</p>}
+            {dl.error && (
+              <p className="text-xs text-red-500 bg-red-50 dark:bg-red-950/30 rounded p-2">
+                {dl.error}
+              </p>
+            )}
 
             <div className="flex gap-2 flex-wrap justify-end">
-              {!dl.isLocal && (dl.status === "downloading" || dl.status === "paused") && !remoteStale && (
-                <span className="text-xs text-zinc-400 self-center">Active in another tab</span>
-              )}
-              {!dl.isLocal && (dl.status === "downloading" || dl.status === "paused") && remoteStale && (
-                <ActionButton onClick={handleTakeover} variant="primary">
-                  Take over
-                </ActionButton>
-              )}
+              {!dl.isLocal &&
+                (dl.status === "downloading" || dl.status === "paused") &&
+                !remoteStale && (
+                  <span className="text-xs text-zinc-400 self-center">Active in another tab</span>
+                )}
+              {!dl.isLocal &&
+                (dl.status === "downloading" || dl.status === "paused") &&
+                remoteStale && (
+                  <ActionButton onClick={handleTakeover} variant="primary">
+                    Take over
+                  </ActionButton>
+                )}
               {dl.isLocal && dl.status === "downloading" && (
                 <ActionButton onClick={handlePause} variant="secondary">
                   Pause
@@ -648,14 +593,27 @@ function StatusBadge({ status, stalled }: { status: DownloadStatus; stalled?: bo
   }
   const map: Record<DownloadStatus, { label: string; cls: string }> = {
     idle: { label: "Idle", cls: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400" },
-    downloading: { label: "Downloading", cls: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300" },
-    paused: { label: "Paused", cls: "bg-yellow-100 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-300" },
-    complete: { label: "Complete", cls: "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300" },
+    downloading: {
+      label: "Downloading",
+      cls: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300",
+    },
+    paused: {
+      label: "Paused",
+      cls: "bg-yellow-100 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-300",
+    },
+    complete: {
+      label: "Complete",
+      cls: "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300",
+    },
     error: { label: "Error", cls: "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300" },
   };
   const { label, cls } = map[status];
   return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}>{label}</span>
+    <span
+      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -675,7 +633,10 @@ function ActionButton({
     danger: "bg-red-600 text-white hover:bg-red-700",
   }[variant];
   return (
-    <button onClick={onClick} className={`rounded-lg w-20 px-3 py-1.5 text-xs font-medium transition-colors ${cls}`}>
+    <button
+      onClick={onClick}
+      className={`rounded-lg w-20 px-3 py-1.5 text-xs font-medium transition-colors ${cls}`}
+    >
       {children}
     </button>
   );

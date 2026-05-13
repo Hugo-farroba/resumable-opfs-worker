@@ -13,7 +13,13 @@
 import * as Comlink from "comlink";
 import { BroadcastBus } from "./lib/bus.js";
 import { Downloader } from "./lib/downloader.js";
-import type { DownloaderEvent, DownloadMeta, ProgressPayload, StatusValue, WarningCode } from "./lib/types.js";
+import type {
+  DownloaderEvent,
+  DownloadMeta,
+  ProgressPayload,
+  StatusValue,
+  WarningCode,
+} from "./lib/types.js";
 import { OpfsStore } from "./lib/opfs-store.js";
 import { consoleLogger } from "./lib/logger.js";
 

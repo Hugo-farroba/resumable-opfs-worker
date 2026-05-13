@@ -72,7 +72,9 @@ self.addEventListener("message", (event) => {
 function cancelActiveReader(id: string, reason: string): void {
   const reader = activeReaders.get(id);
   if (!reader) return;
-  reader.cancel().catch((err) => logger.log("warn", "sw.reader.cancel.failed", { id, reason }, err));
+  reader
+    .cancel()
+    .catch((err) => logger.log("warn", "sw.reader.cancel.failed", { id, reason }, err));
   activeReaders.delete(id);
 }
 

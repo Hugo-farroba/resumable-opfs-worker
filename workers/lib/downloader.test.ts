@@ -37,7 +37,11 @@ describe("progress reaches 100% before complete", () => {
     const fetchFn = makeFakeFetch([
       {
         noRange: true,
-        response: { status: 200, headers: { "content-length": String(total) }, chunks: chunkBytes(total, 16) },
+        response: {
+          status: 200,
+          headers: { "content-length": String(total) },
+          chunks: chunkBytes(total, 16),
+        },
       },
     ]);
     const d = new Downloader(store, { fetchFn, tunables: T });
@@ -87,7 +91,9 @@ describe("heartbeat lifecycle", () => {
   it("emits while downloading and stops on complete", async () => {
     const store = new MemoryStore();
     const total = 64;
-    const fetchFn = makeFakeFetch([{ noRange: true, response: { chunks: chunkBytes(total, 16), chunkDelayMs: 8 } }]);
+    const fetchFn = makeFakeFetch([
+      { noRange: true, response: { chunks: chunkBytes(total, 16), chunkDelayMs: 8 } },
+    ]);
     const d = new Downloader(store, { fetchFn, tunables: { ...T, heartbeatInterval: 10 } });
     const { events } = recordEvents(d);
     await d.start(URL_A);
@@ -106,7 +112,9 @@ describe("heartbeat lifecycle", () => {
 
   it("stops on cancel", async () => {
     const store = new MemoryStore();
-    const fetchFn = makeFakeFetch([{ noRange: true, response: { chunks: chunkBytes(1024, 16), chunkDelayMs: 50 } }]);
+    const fetchFn = makeFakeFetch([
+      { noRange: true, response: { chunks: chunkBytes(1024, 16), chunkDelayMs: 50 } },
+    ]);
     const d = new Downloader(store, { fetchFn, tunables: { ...T, heartbeatInterval: 10 } });
     const { events } = recordEvents(d);
     await d.start(URL_A);
@@ -159,7 +167,11 @@ describe("finalise persists complete state to meta", () => {
     const fetchFn = makeFakeFetch([
       {
         noRange: true,
-        response: { status: 200, headers: { "content-length": String(total) }, chunks: chunkBytes(total, 32) },
+        response: {
+          status: 200,
+          headers: { "content-length": String(total) },
+          chunks: chunkBytes(total, 32),
+        },
       },
     ]);
     // Use a large flushBytes so the loop's last writeMeta lags behind total.
@@ -186,7 +198,11 @@ describe("happy path", () => {
     const fetchFn = makeFakeFetch([
       {
         noRange: true,
-        response: { status: 200, headers: { "content-length": String(total) }, chunks: chunkBytes(total, 32) },
+        response: {
+          status: 200,
+          headers: { "content-length": String(total) },
+          chunks: chunkBytes(total, 32),
+        },
       },
     ]);
     const d = new Downloader(store, { fetchFn, tunables: T });
@@ -230,7 +246,11 @@ describe("Range fallback (bug 1.1)", () => {
     const fetchFn = makeFakeFetch([
       {
         rangeStart: 40,
-        response: { status: 200, headers: { "content-length": String(total) }, chunks: chunkBytes(total, 32) },
+        response: {
+          status: 200,
+          headers: { "content-length": String(total) },
+          chunks: chunkBytes(total, 32),
+        },
       },
     ]);
     const d = new Downloader(store, { fetchFn, tunables: T });
@@ -264,7 +284,9 @@ describe("Range fallback emits a warning", () => {
       totalBytes: total,
       createdAt: Date.now(),
     });
-    const fetchFn = makeFakeFetch([{ rangeStart: 20, response: { status: 200, chunks: chunkBytes(total, 16) } }]);
+    const fetchFn = makeFakeFetch([
+      { rangeStart: 20, response: { status: 200, chunks: chunkBytes(total, 16) } },
+    ]);
     const d = new Downloader(store, { fetchFn, tunables: T });
     const { events } = recordEvents(d);
     await d.start(URL_A);
@@ -391,13 +413,52 @@ describe("resume range validation", () => {
       expect(err.message).toContain("invalid resumed range");
     }
   });
+
+  it("allows resume when Content-Range is not visible to script", async () => {
+    const store = new MemoryStore();
+    const total = 256;
+    const id = await sha256Id(URL_A);
+    const handle = await store.openHandle(id);
+    handle.write(chunkBytes(64, 64)[0], { at: 0 });
+    handle.close();
+    await store.writeMeta({
+      id,
+      url: URL_A,
+      fileName: "file.bin",
+      downloadedBytes: 64,
+      totalBytes: total,
+      createdAt: Date.now(),
+    });
+
+    const fetchFn = makeFakeFetch([
+      {
+        rangeStart: 64,
+        response: {
+          status: 206,
+          headers: { "content-length": String(total - 64) },
+          chunks: chunkBytes(total, 32).flatMap((c, i) => (i * 32 < 64 ? [] : [c])),
+        },
+      },
+    ]);
+    const d = new Downloader(store, { fetchFn, tunables: T });
+    const { events } = recordEvents(d);
+
+    await d.start(URL_A);
+    await waitFor(() => events.some((e) => e.type === "data"));
+
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    expect(store.bytesOf(id).byteLength).toBe(total);
+  });
 });
 
 describe("elapsed math (bug 1.3)", () => {
   it("produces non-negative elapsed time on a fresh start", async () => {
     const store = new MemoryStore();
     const fetchFn = makeFakeFetch([
-      { noRange: true, response: { chunks: chunkBytes(64, 16), headers: { "content-length": "64" } } },
+      {
+        noRange: true,
+        response: { chunks: chunkBytes(64, 16), headers: { "content-length": "64" } },
+      },
     ]);
     const d = new Downloader(store, { fetchFn, tunables: T });
     const { events } = recordEvents(d);
@@ -426,7 +487,10 @@ describe("batched flush (perf 3.1)", () => {
     const fetchFn = makeFakeFetch([
       {
         noRange: true,
-        response: { chunks: chunkBytes(total, chunkSize), headers: { "content-length": String(total) } },
+        response: {
+          chunks: chunkBytes(total, chunkSize),
+          headers: { "content-length": String(total) },
+        },
       },
     ]);
 
@@ -494,7 +558,11 @@ describe("cancel after complete clears OPFS", () => {
     const fetchFn = makeFakeFetch([
       {
         noRange: true,
-        response: { status: 200, headers: { "content-length": String(total) }, chunks: chunkBytes(total, 16) },
+        response: {
+          status: 200,
+          headers: { "content-length": String(total) },
+          chunks: chunkBytes(total, 16),
+        },
       },
     ]);
     const d = new Downloader(store, { fetchFn, tunables: T });

@@ -42,7 +42,9 @@ describe("deriveFileNameFromUrl", () => {
 
 describe("deriveFileName", () => {
   it("prefers Content-Disposition filename over URL", () => {
-    const r = new Response(null, { headers: { "content-disposition": 'attachment; filename="real.zip"' } });
+    const r = new Response(null, {
+      headers: { "content-disposition": 'attachment; filename="real.zip"' },
+    });
     expect(deriveFileName(r, "https://x.com/derived.bin")).toBe("real.zip");
   });
   it("falls back to URL when header missing", () => {
@@ -87,9 +89,13 @@ describe("serverSupportsRanges", () => {
     expect(serverSupportsRanges(new Response(null, { status: 206 }))).toBe(true);
   });
   it("true on Accept-Ranges: bytes", () => {
-    expect(serverSupportsRanges(new Response(null, { headers: { "accept-ranges": "bytes" } }))).toBe(true);
+    expect(
+      serverSupportsRanges(new Response(null, { headers: { "accept-ranges": "bytes" } })),
+    ).toBe(true);
   });
   it("false on Accept-Ranges: none", () => {
-    expect(serverSupportsRanges(new Response(null, { headers: { "accept-ranges": "none" } }))).toBe(false);
+    expect(serverSupportsRanges(new Response(null, { headers: { "accept-ranges": "none" } }))).toBe(
+      false,
+    );
   });
 });

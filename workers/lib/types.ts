@@ -43,7 +43,6 @@ export interface StateSnapshot {
   elapsed: number;
 }
 
-
 export type WarningCode = "range-unsupported" | "validator-mismatch";
 
 export type DownloaderEvent =

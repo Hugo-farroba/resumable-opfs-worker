@@ -61,7 +61,12 @@ export const noopLogger: Logger = {
 // Run a synchronous side-effect that may throw, log on failure, return result
 // or undefined. Used to replace `try { x() } catch { /* */ }` blocks where the
 // caller really does want best-effort.
-export function tryOr<T>(logger: Logger, event: string, fn: () => T, ctx?: LogContext): T | undefined {
+export function tryOr<T>(
+  logger: Logger,
+  event: string,
+  fn: () => T,
+  ctx?: LogContext,
+): T | undefined {
   try {
     return fn();
   } catch (err) {

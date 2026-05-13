@@ -117,7 +117,10 @@ export function readValidator(response: Response): ResourceValidator {
   };
 }
 
-export function pickIfRangeValidator(meta: { etag?: string | null; lastModified?: string | null }): string | null {
+export function pickIfRangeValidator(meta: {
+  etag?: string | null;
+  lastModified?: string | null;
+}): string | null {
   // Per RFC 7233 §3.2 If-Range carries ONE validator. Prefer ETag.
   if (meta.etag) return meta.etag;
   if (meta.lastModified) return meta.lastModified;

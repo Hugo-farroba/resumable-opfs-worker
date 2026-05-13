@@ -12,7 +12,9 @@ class MemoryHandle implements SyncHandle {
   write(buf: ArrayBuffer | ArrayBufferView, opts: { at: number }): number {
     if (this.closed) throw new Error("handle closed");
     const view =
-      buf instanceof ArrayBuffer ? new Uint8Array(buf) : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      buf instanceof ArrayBuffer
+        ? new Uint8Array(buf)
+        : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
     const end = opts.at + view.byteLength;
     if (end > this.bag.bytes.byteLength) {
       const grown = new Uint8Array(end);

@@ -1,4 +1,9 @@
-import { FLUSH_BYTES, FLUSH_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, PROGRESS_INTERVAL_MS } from "./constants.js";
+import {
+  FLUSH_BYTES,
+  FLUSH_INTERVAL_MS,
+  HEARTBEAT_INTERVAL_MS,
+  PROGRESS_INTERVAL_MS,
+} from "./constants.js";
 import {
   deriveFileName,
   deriveFileNameFromUrl,
@@ -11,6 +16,7 @@ import {
 import type { Logger } from "./logger.js";
 import { consoleLogger, tryOr, tryOrAsync } from "./logger.js";
 import type { DownloaderEvent, DownloadMeta, Store, SyncHandle, WorkerState } from "./types.js";
+import { createDownloadLifecycleActor, lifecycleState } from "./download-lifecycle-machine.js";
 
 export const DOWNLOADER_DEFAULTS = {
   flushBytes: FLUSH_BYTES,
@@ -69,7 +75,7 @@ interface RunContext {
 // explicit generation token.
 
 export class Downloader extends EventTarget {
-  private state: WorkerState = "idle";
+  private readonly lifecycle = createDownloadLifecycleActor();
   private generation = 0;
   private ctx: RunContext | null = null;
   // After a successful finalise, OPFS files are kept so the user can re-export
@@ -103,6 +109,10 @@ export class Downloader extends EventTarget {
     const wrapped = (ev: Event) => handler((ev as CustomEvent<DownloaderEvent>).detail);
     this.addEventListener("event", wrapped);
     return () => this.removeEventListener("event", wrapped);
+  }
+
+  private get state(): WorkerState {
+    return lifecycleState(this.lifecycle);
   }
 
   async start(url: string, fileName?: string): Promise<void> {
@@ -161,12 +171,12 @@ export class Downloader extends EventTarget {
     // OPFS is the source of truth for resumable downloads; we do not hit the
     // network for bytes we already have.
     if (totalBytes !== null && downloadedBytes >= totalBytes) {
-      this.state = "downloading";
+      this.lifecycle.send({ type: "START" });
       void this.finalise(runId);
       return;
     }
 
-    this.state = "downloading";
+    this.lifecycle.send({ type: "START" });
     this.startHeartbeat();
     void this.runLoop(runId);
   }
@@ -175,7 +185,7 @@ export class Downloader extends EventTarget {
   // and observer tabs need to know it's still alive.
   pause(): void {
     if (this.state !== "downloading" || !this.ctx) return;
-    this.state = "paused";
+    this.lifecycle.send({ type: "PAUSE" });
     this.ctx.currentPauseStartedAt = this.now();
     this.ctx.abortController?.abort();
     // Kill the current loop; persistPauseStateIfRequested will write meta.
@@ -185,20 +195,22 @@ export class Downloader extends EventTarget {
   resume(): void {
     if (this.state !== "paused" || !this.ctx) return;
     this.ctx.accumulatedPauseMs += this.now() - this.ctx.currentPauseStartedAt;
-    this.state = "downloading";
+    this.lifecycle.send({ type: "RESUME" });
     void this.runLoop(++this.generation);
   }
 
   async cancel(): Promise<void> {
     const wasActive = this.state !== "idle";
-    this.state = "cancelled";
+    this.lifecycle.send({ type: "CANCEL" });
     this.generation++;
     this.stopHeartbeat();
     const activeId = this.ctx?.downloadId ?? null;
 
     if (this.ctx) {
       this.ctx.abortController?.abort();
-      tryOr(this.logger, "downloader.cancel.handle.close", () => this.ctx!.handle.close(), { id: activeId });
+      tryOr(this.logger, "downloader.cancel.handle.close", () => this.ctx!.handle.close(), {
+        id: activeId,
+      });
       this.ctx = null;
     }
 
@@ -207,9 +219,11 @@ export class Downloader extends EventTarget {
     if (this.lastCompletedId) idsToRemove.add(this.lastCompletedId);
     this.lastCompletedId = null;
     for (const id of idsToRemove) {
-      await tryOrAsync(this.logger, "downloader.cancel.store.remove", () => this.store.remove(id), { id });
+      await tryOrAsync(this.logger, "downloader.cancel.store.remove", () => this.store.remove(id), {
+        id,
+      });
     }
-    this.state = "idle";
+    this.lifecycle.send({ type: "RESET" });
     if (wasActive || idsToRemove.size > 0) this.emit({ type: "status", status: "idle" });
   }
 
@@ -224,7 +238,9 @@ export class Downloader extends EventTarget {
       this.emit({ type: "error", message: "Cannot clear an active download - cancel first." });
     } else {
       if (this.lastCompletedId === id) this.lastCompletedId = null;
-      await tryOrAsync(this.logger, "downloader.clear.store.remove", () => this.store.remove(id), { id });
+      await tryOrAsync(this.logger, "downloader.clear.store.remove", () => this.store.remove(id), {
+        id,
+      });
     }
     return this.listPending();
   }
@@ -253,13 +269,23 @@ export class Downloader extends EventTarget {
     }
 
     if (rangeStart > 0 && response.status === 206) {
-      const resumedRange = parseByteRange(response);
-      if (!resumedRange || resumedRange.start !== rangeStart) {
+      const contentRange = response.headers.get("content-range");
+      const resumedRange = contentRange ? parseByteRange(response) : null;
+      if (contentRange && (!resumedRange || resumedRange.start !== rangeStart)) {
         this.failAndReset(
           "range.invalid",
-          new Error(`Server returned an invalid resumed range for byte ${rangeStart.toLocaleString()}.`),
+          new Error(
+            `Server returned an invalid resumed range for byte ${rangeStart.toLocaleString()}.`,
+          ),
         );
         return;
+      }
+      if (!contentRange) {
+        this.logger.log("warn", "downloader.range.validation.skipped", {
+          id: ctx.downloadId,
+          url: ctx.url,
+          rangeStart,
+        });
       }
     }
 
@@ -272,7 +298,10 @@ export class Downloader extends EventTarget {
       ctx.handle.truncate(0);
       ctx.downloadedBytes = 0;
       writeOffset = 0;
-      const validatorMismatch = !!pickIfRangeValidator({ etag: ctx.etag, lastModified: ctx.lastModified });
+      const validatorMismatch = !!pickIfRangeValidator({
+        etag: ctx.etag,
+        lastModified: ctx.lastModified,
+      });
       this.emit({
         type: "warning",
         code: validatorMismatch ? "validator-mismatch" : "range-unsupported",
@@ -317,7 +346,8 @@ export class Downloader extends EventTarget {
 
         const now = this.now();
         const flushDue =
-          bytesSinceFlush >= this.tunables.flushBytes || now - lastFlushAt >= this.tunables.flushInterval;
+          bytesSinceFlush >= this.tunables.flushBytes ||
+          now - lastFlushAt >= this.tunables.flushInterval;
         if (flushDue) {
           ctx.handle.flush();
           await this.store.writeMeta(this.snapshotMeta());
@@ -340,7 +370,9 @@ export class Downloader extends EventTarget {
     return this.finalise(runId);
   }
 
-  private async cancelReaderAndExit(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  private async cancelReaderAndExit(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+  ): Promise<void> {
     await tryOrAsync(this.logger, "downloader.reader.cancel.failed", () => reader.cancel());
     return this.persistPauseStateIfRequested();
   }
@@ -365,7 +397,7 @@ export class Downloader extends EventTarget {
     tryOr(this.logger, "downloader.finalise.handle.close", () => ctx.handle.close(), { id });
 
     const totalBytes = ctx.totalBytes;
-    this.state = "idle";
+    this.lifecycle.send({ type: "RESET" });
     this.ctx = null;
     this.stopHeartbeat();
 
@@ -387,19 +419,26 @@ export class Downloader extends EventTarget {
   private async persistPauseStateIfRequested(): Promise<void> {
     if (this.state !== "paused" || !this.ctx) return;
     tryOr(this.logger, "downloader.pause.flush.failed", () => this.ctx!.handle.flush());
-    await tryOrAsync(this.logger, "downloader.pause.writeMeta.failed", () => this.store.writeMeta(this.snapshotMeta()));
+    await tryOrAsync(this.logger, "downloader.pause.writeMeta.failed", () =>
+      this.store.writeMeta(this.snapshotMeta()),
+    );
     this.emit({ type: "status", status: "paused" });
   }
 
   private failAndReset(event: string, err: unknown): void {
     const message = err instanceof Error ? err.message : String(err);
-    this.logger.log("error", `downloader.${event}`, { id: this.ctx?.downloadId, url: this.ctx?.url }, err);
+    this.logger.log(
+      "error",
+      `downloader.${event}`,
+      { id: this.ctx?.downloadId, url: this.ctx?.url },
+      err,
+    );
     this.emit({ type: "error", message });
     if (this.ctx) {
       tryOr(this.logger, "downloader.fail.handle.close", () => this.ctx!.handle.close());
       this.ctx = null;
     }
-    this.state = "idle";
+    this.lifecycle.send({ type: "RESET" });
     this.stopHeartbeat();
   }
 
@@ -409,7 +448,12 @@ export class Downloader extends EventTarget {
     const message = exclusive
       ? "This download is already active in another tab."
       : `OPFS error: ${e?.message ?? String(err)}`;
-    this.logger.log("error", exclusive ? "downloader.openHandle.locked" : "downloader.openHandle.failed", ctx, err);
+    this.logger.log(
+      "error",
+      exclusive ? "downloader.openHandle.locked" : "downloader.openHandle.failed",
+      ctx,
+      err,
+    );
     this.emit({ type: "error", message });
   }
 
@@ -426,7 +470,12 @@ export class Downloader extends EventTarget {
       return await this.fetchFn(ctx.url, { signal, headers });
     } catch (err) {
       if (!sentIfRange || !isLikelyCorsPreflightFailure(err) || signal.aborted) throw err;
-      this.logger.log("warn", "downloader.fetch.ifRangeStripped", { id: ctx.downloadId, url: ctx.url }, err);
+      this.logger.log(
+        "warn",
+        "downloader.fetch.ifRangeStripped",
+        { id: ctx.downloadId, url: ctx.url },
+        err,
+      );
       ctx.skipIfRange = true;
       // Persist so future runs (page refresh, pending-card resume) skip the
       // failed preflight on the very first attempt.
@@ -507,7 +556,9 @@ export class Downloader extends EventTarget {
 }
 
 export function isIncompleteMeta(meta: DownloadMeta): boolean {
-  return meta.downloadedBytes > 0 && (meta.totalBytes === null || meta.downloadedBytes < meta.totalBytes);
+  return (
+    meta.downloadedBytes > 0 && (meta.totalBytes === null || meta.downloadedBytes < meta.totalBytes)
+  );
 }
 
 // CORS / network rejections in the browser are deliberately opaque - all we

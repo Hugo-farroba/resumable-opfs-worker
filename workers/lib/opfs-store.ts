@@ -8,7 +8,7 @@ import type { DownloadMeta, Store, SyncHandle } from "./types.js";
 
 export class OpfsStore implements Store {
   private root: FileSystemDirectoryHandle | null = null;
-  constructor(private readonly logger: Logger = consoleLogger) { }
+  constructor(private readonly logger: Logger = consoleLogger) {}
 
   private async getRoot(): Promise<FileSystemDirectoryHandle> {
     return (this.root ??= await navigator.storage.getDirectory());
@@ -46,7 +46,12 @@ export class OpfsStore implements Store {
   async remove(id: string): Promise<void> {
     const root = await this.getRoot();
     await this.removePartFile(root, id);
-    await tryOrAsync(this.logger, "opfs.remove.meta.failed", () => root.removeEntry(this.metaPath(id)), { id });
+    await tryOrAsync(
+      this.logger,
+      "opfs.remove.meta.failed",
+      () => root.removeEntry(this.metaPath(id)),
+      { id },
+    );
   }
 
   // The browser may keep an OPFS .part pinned for a moment after a recent
@@ -71,7 +76,12 @@ export class OpfsStore implements Store {
       this.logger.log("warn", "opfs.remove.part.truncate.failed", { id }, err);
       return;
     }
-    await tryOrAsync(this.logger, "opfs.remove.part.retry.failed", () => root.removeEntry(this.partPath(id)), { id });
+    await tryOrAsync(
+      this.logger,
+      "opfs.remove.part.retry.failed",
+      () => root.removeEntry(this.partPath(id)),
+      { id },
+    );
   }
 
   async listAllMetas(): Promise<DownloadMeta[]> {

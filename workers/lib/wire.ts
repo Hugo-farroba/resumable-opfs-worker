@@ -42,7 +42,10 @@ const stateSnapshotSchema = z.object({
   elapsed: z.number(),
 });
 
-const warningCodeSchema = z.union([z.literal("range-unsupported"), z.literal("validator-mismatch")]);
+const warningCodeSchema = z.union([
+  z.literal("range-unsupported"),
+  z.literal("validator-mismatch"),
+]);
 
 const statusValueSchema = z.union([
   z.literal("idle"),
